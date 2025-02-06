@@ -132,7 +132,7 @@ def main() :
     st.write(forecast.tail(7)[['ds', 'yhat']])
 
 
-if __name__ == '__main()__' :
+if __name__ == '__main__' :
     main()
 
 
