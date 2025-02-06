@@ -1,142 +1,97 @@
-import streamlit as st
-import pandas as pd
+import warnings
+import ssl
 import requests
-from prophet import Prophet
+import pandas as pd  # pandas 임포트 추가
+import streamlit as st
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
+import urllib3
 
+# SSL 경고 숨기기 및 인증서 검증 비활성화
+warnings.filterwarnings('ignore', category=urllib3.exceptions.InsecureRequestWarning)
 
-# 기상청 API 호출 함수
-# Encoding 인증키 사용
-ENCODE_KEY = "5YGFViGmV1kbXqnD3qotA8CvXjxS4WEgX3nT0%2F0dF%2FlHZk2W7D%2FWgiCoBLNl3sbDbSR86pmOPLkr6AT4%2BRA2Jw%3D%3D"
+class SSLAdapter(HTTPAdapter):
+    """SSL 버전 설정을 위한 커스텀 HTTPAdapter"""
+    def __init__(self, ssl_context=None, **kwargs):
+        self.ssl_context = ssl_context
+        super().__init__(**kwargs)
 
+    def init_poolmanager(self, *args, **kwargs):
+        # 기본 SSLContext 사용
+        context = self.ssl_context or ssl.create_default_context()
+        context.check_hostname = False  # check_hostname 비활성화
+        kwargs['ssl_context'] = context
+        return super().init_poolmanager(*args, **kwargs)
 
-def get_weather_data(statr_date, end_date) :
-    url = f"https://apis.data.go.kr/1360000/VilageFcstInfoService/getVilageFcst"
+def get_weather_data(start_date, end_date):
+    url = "https://apis.data.go.kr/1360000/VilageFcstInfoService/getVilageFcst"  # HTTPS를 사용
 
-    
     params = {
-        "serviceKey" : ENCODE_KEY, # Encoding 인증키
-        "numOfRows" : "10",        # 한 번에 받을 데이터 수
-        "pageNo" : "1",            # 페이지 번호
-        "dateType" : "JSON",       # 응답 데이터 형식 (JSON)
-        "base_date" : statr_date,  # 시작 날짜(YYYYMMDD 형식)
-        "base_time" : "0600",      # 기준 시간(예: 0600 => 오전 6시)
-        "nx" : "60",               # 예시 좌표 (경도)
-        "ny" : "127",              # 예시 좌표 (위도)
+        "serviceKey": Encoding_Key,
+        "numOfRows": "10",
+        "pageNo": "1",
+        "dataType": "JSON",
+        "base_date": start_date,
+        "base_time": "0600",
+        "nx": "60",
+        "ny": "127",
     }
 
+    try:
+        # SSLContext를 사용하여 SSL 버전 설정
+        # 여기서는 기본적으로 시스템에서 허용하는 최신 버전으로 설정됨
+        context = ssl.create_default_context()
+        context.check_hostname = False  # check_hostname 비활성화
 
-    response = requests.get(url, params=params)
-    # requests.get(): HTTP GET 요청을 보내는 함수. 기상청에 API 요청을 보낸다.
-        # url: 요청할 API 의 URL
-        # params=params: params 는 API에 전달할 쿼리 파라미터를 포함하는 딕셔너리이다.
-            # 인증키, 날짜, 위치 등의 정보가 들어있다.
-    
+        # Session을 이용한 요청
+        session = requests.Session()
+        adapter = SSLAdapter(ssl_context=context)
+        session.mount("https://", adapter)
 
-    if response.status_code == 200 :
-    # response.status_code: 코드라인 요청에 대한 응답 상태코드가 200인지 확인.
-    # 200 이면 성공!
+        # 요청 보내기
+        response = session.get(url, params=params, verify=False, timeout=30)
 
-        data = response.json()
-        # response.json(): API 로 부터 받은 응답을 JSON 형식으로 변환하여
-        # Python 객체(딕셔너리 등) 으로 반환한다
-        # 기상청 API의 응답을 JSON 형식으로 변환하여 data 변수에 저장한다
+        # 응답 상태 코드 확인
+        response.raise_for_status()
 
-        weather_data = data['response']['body']['items']['item']
-        # 기상청 API에서 제공하는 응답 구조에 맞춰 필요한 데이터를 추출
-        # data['response']['body']['items']['item']:
-            # response > body > items > item 키에 해당하는 값을 추출하며
-            # API 응답의 구체적인 데이터가 있는 위치를 나타낸다.
-        # weather_data: 기상청 API 에서 가져온 날씨 데이터를 가지고 있다.
+        if response.status_code == 200:
+            data = response.json()
+            weather_data = data.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+            if not weather_data:
+                raise ValueError("날씨 데이터가 없습니다.")
+            
+            weather_df = pd.DataFrame(weather_data)
+            weather_df['datetime'] = pd.to_datetime(weather_df['fcstDate'].astype(str) + ' ' + weather_df['fcstTime'].astype(str), format='%Y%m%d %H%M')
+            return weather_df[['datetime', 'category', 'fcstValue']]
+        else:
+            raise ValueError(f"응답 코드 오류: {response.status_code}")
 
-        weather_df = pd.DataFrame(weather_data)
-        # pd.DataFrame(): 가져온 날씨 데이터를 Pandas DataFrame 형식으로 변환하여
-        # weather_df 변수에 저장한다.
+    except requests.exceptions.RequestException as e:
+        st.error(f"기상청 API 호출 실패: {e}")
+        st.write(f"API URL: {url}, 파라미터: {params}")
+        st.write(f"상세 에러: {str(e)}")
+    except Exception as e:
+        st.error(f"오류 발생: {e}")
+        st.write(f"API URL: {url}, 파라미터: {params}")
 
-        return weather_df
-        # 날씨 데이터를 DataFrame 으로 변환한 후 이를 반환한다.
-        # 함수에서 호출한 곳으로 전달되어 후속 작업을 진행하도록 해준다.
+    return None
 
-    else :
-        st.error("기상청 API 호출 실패")
-        return None
-    # st.error: 요청이 실패(상태코드가 200이 아닌 경우) 하면
-        # Streamlit 라이브러리 함수로 사용자에게 오류메시지를 화면에 표시한다
-        # API 호출 실패 시 사용자에게 알려주는 메시지를 표시하는 것.
-    # return None: API 호출 실패 시 None 을 반환하는데 실패를 의미한다.
+# 기상청 서비스 키를 변수로 선언
+Encoding_Key = "5YGFViGmV1kbXqnD3qotA8CvXjxS4WEgX3nT0%2F0dF%2FlHZk2W7D%2FWgiCoBLNl3sbDbSR86pmOPLkr6AT4%2BRA2Jw%3D%3D"
 
-
-
-# 고속도로 교통량 데이터 불러오기
-def load_traffic_data() :
-    # 교통량 데이터 파일경로
-    highway_data = pd.read_csv('data/ETC_P7_07_04_516342.csv')
-
-    # 날짜 형식으로 변환
-    highway_data['datetime'] = pd.to_datetime(highway_data['날짜컬럼'])
-
-    # 필요한 컬럼만 선택한다
-    highway_data = highway_data[['datetime', '교통량']]
-    return highway_data
-
-
-# Prophet 모델을 학습하고 예측하는 함수
-def train_and_predict(model_data) :
-    model = Prophet()
-
-    # 기온을 regressor 로 추가
-    model.add_regressor('온도')
-
-    # 풍량을 regressor 로 추가
-    model.add_regressor('풍량')
-
-    # 강수량을 regressor 로 추가
-    model.add_regressor('강수량')
-
-
-    model.fit(model_data)
-    future = model.make_future_dataframe(model_data, periods= 7)
-    forecast = model.predict(future)
-
-    return forecast
-
-
-
-def main() :
-    
+def main():
     st.title('고속도로 교통량 예측 앱')
 
-
     # 기상청 데이터 가져오기
-    today = pd.to_datetime('today').strftime('%Y%m%d')
+    today = pd.to_datetime('today').strftime('%Y%m%d')  # pandas가 정의되어야 합니다
     weather_data = get_weather_data(today, today)
 
+    if weather_data is None:
+        st.error("날씨 데이터를 가져오는데 실패했습니다.")
+        return
 
-    # 교통량 데이터 불러오기
-    highway_data = load_traffic_data()
+    # 예시: 가져온 데이터 출력
+    st.write(weather_data)
 
-
-    # 기상청 데이터와 교통량 데이터를 병합
-    merged_data = pd.merge(weather_data, highway_data, on='datetime', how='left')
-
-
-    # Prophet 모델 학습 및 예측
-    forecast = train_and_predict(merged_data)
-
-
-    # 예측 결과 시각화
-    st.write("예측된 교통량")
-    st.line_chart(forecast['yhat'])
-
-
-    # 예측된 교통량 출력
-    st.write(forecast.tail(7)[['ds', 'yhat']])
-
-
-if __name__ == '__main__' :
+if __name__ == '__main__':
     main()
-
-
-
-
-
-
