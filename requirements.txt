@@ -3,6 +3,5 @@ pandas
 requests
 prophet
 urllib3
-ssl
-warnings
-
+certifi
+cryptography
